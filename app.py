@@ -9,19 +9,15 @@ warnings.filterwarnings('ignore')
 
 st.set_page_config(page_title="My Portfolio Screener", layout="wide")
 st.title("📈 Stage Analysis Portfolio Screener")
-st.markdown("Fetching live, securely authenticated portfolio data...")
+st.markdown("Fetching securely authenticated portfolio data and **live market prices**...")
 
 # ==========================================
 # SECURE CONNECTION URL
-# Using the full URL that successfully bypassed the cache!
 # ==========================================
 SPREADSHEET = "https://docs.google.com/spreadsheets/d/18ci-lXIJAhb-T96DZ1bL5sEKVmishPTBItIMaACBRJw/edit?gid=0#gid=0"
 
 try:
-    # 1. Connect securely using the hidden secrets
     conn = st.connection("gsheets", type=GSheetsConnection)
-    
-    # 2. Read the data (using the full URL variable)
     holdings_df = conn.read(spreadsheet=SPREADSHEET)
     
     if 'Instrument' not in holdings_df.columns:
@@ -35,12 +31,16 @@ try:
         
         results = []
         
-        # 3. Analyze the stocks using yfinance
-        with st.spinner(f"Analyzing {len(tickers)} stocks..."):
+        with st.spinner(f"Fetching live prices and analyzing {len(tickers)} stocks..."):
             for ticker in tickers:
                 try:
                     df = yf.download(ticker, start=start_date, end=end_date, progress=False)
                     if df.empty or len(df) < 250: continue
+                    
+                    # ---------------------------------------------------------
+                    # NEW: Grab the absolute latest daily close price right now
+                    # ---------------------------------------------------------
+                    live_price = float(df['Close'].iloc[-1])
                         
                     weekly_df = df['Close'].resample('W-FRI').last()
                     weekly_df = pd.DataFrame(weekly_df)
@@ -63,6 +63,7 @@ try:
                         
                     results.append({
                         'Ticker': ticker.replace('.NS', ''), 
+                        'Live Price': live_price,  # <--- Adding it to the final table
                         '50W SMA': current_sma,
                         '% Dist from SMA': pct_distance,
                         'Current Stage': stage
@@ -70,23 +71,25 @@ try:
                 except Exception:
                     pass 
 
-        # 4. Merge and display the final results
         if results:
             analysis_df = pd.DataFrame(results)
             
-            # Merge to keep ALL original Zerodha columns
             merged_df = pd.merge(holdings_df, analysis_df, left_on='Instrument', right_on='Ticker', how='left')
             
-            # Clean up duplicate Ticker column and any hidden 'Unnamed' columns
             if 'Ticker' in merged_df.columns: 
                 merged_df = merged_df.drop(columns=['Ticker'])
             merged_df = merged_df.loc[:, ~merged_df.columns.str.contains('^Unnamed')]
             
-            # Round off numeric columns for a clean display
-            numeric_cols = merged_df.select_dtypes(include=['float64', 'int64']).columns
-            merged_df[numeric_cols] = merged_df[numeric_cols].round(0)
+            # Reorder columns to put Live Price right next to the Instrument for easy reading
+            cols = list(merged_df.columns)
+            if 'Live Price' in cols and 'Instrument' in cols:
+                cols.insert(cols.index('Instrument') + 1, cols.pop(cols.index('Live Price')))
+                merged_df = merged_df[cols]
             
-            st.success("Analysis Complete!")
+            numeric_cols = merged_df.select_dtypes(include=['float64', 'int64']).columns
+            merged_df[numeric_cols] = merged_df[numeric_cols].round(2)
+            
+            st.success("Live Market Data Pulled Successfully!")
             st.dataframe(merged_df, use_container_width=True, hide_index=True)
         else:
             st.warning("No valid data could be processed.")
