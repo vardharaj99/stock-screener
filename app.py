@@ -27,13 +27,14 @@ try:
         tickers = [t + ".NS" if not t.endswith(".NS") else t for t in raw_tickers]
         
         results = []
-        errors = [] # <-- New: We will store errors to see exactly what is failing
+        errors = [] 
         
-        with st.spinner(f"Fetching live prices and analyzing {len(tickers)} stocks... (This may take a minute)"):
+        with st.spinner(f"Fetching intraday prices and analyzing {len(tickers)} stocks... (This may take a minute)"):
             for ticker in tickers:
                 try:
-                    # FIX: Use .history() instead of .download() for a stable table format
                     stock = yf.Ticker(ticker)
+                    
+                    # 1. Grab Daily History for the Math
                     df = stock.history(period="2y")
                     
                     if df.empty or 'Close' not in df.columns: 
@@ -41,23 +42,30 @@ try:
                     
                     close_series = df['Close'].dropna()
                     
-                    # Need at least a few weeks of data
                     if len(close_series) < 50: 
                         continue
                     
-                    # Grab Live Price directly
-                    live_price = float(close_series.iloc[-1])
+                    # ---------------------------------------------------------
+                    # THE FIX: Snipe the 1-minute chart for the true Live Price
+                    # ---------------------------------------------------------
+                    try:
+                        live_data = stock.history(period="1d", interval="1m")
+                        if not live_data.empty and 'Close' in live_data.columns:
+                            live_price = float(live_data['Close'].dropna().iloc[-1])
+                        else:
+                            live_price = float(close_series.iloc[-1]) # Fallback to daily
+                    except Exception:
+                        live_price = float(close_series.iloc[-1]) # Fallback to daily
                         
-                    # Resample to Weekly
+                    # 2. Do the Stage Analysis Math
                     weekly_df = close_series.resample('W-FRI').last()
                     weekly_df = pd.DataFrame(weekly_df, columns=['Close'])
                     weekly_df['50W_SMA'] = weekly_df['Close'].rolling(window=50).mean()
                     
-                    # Skip if stock is too new for a 50-Week average
                     if len(weekly_df) < 50 or pd.isna(weekly_df['50W_SMA'].iloc[-1]): 
                         continue
                         
-                    current_price = float(weekly_df['Close'].iloc[-1])
+                    current_price = live_price # Use our new sniper price for the math too!
                     current_sma = float(weekly_df['50W_SMA'].iloc[-1])
                     sma_4_weeks_ago = float(weekly_df['50W_SMA'].iloc[-5])
                     pct_distance = ((current_price - current_sma) / current_sma) * 100
@@ -77,7 +85,6 @@ try:
                         'Current Stage': stage
                     })
                 except Exception as e:
-                    # If it crashes, record the exact error message
                     errors.append(f"{ticker}: {str(e)}") 
 
         if results:
@@ -101,7 +108,6 @@ try:
             st.dataframe(merged_df, use_container_width=True, hide_index=True)
         else:
             st.warning("No valid data could be processed. Please check Yahoo Finance connectivity.")
-            # If everything fails, display the actual errors!
             if errors:
                 st.error("Technical debugging details:")
                 st.write(errors[:5])
