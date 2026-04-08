@@ -3,16 +3,16 @@ from streamlit_gsheets import GSheetsConnection
 
 st.title("🔌 Security Validation Test (Cache Buster)")
 
-# Your verified exact ID
-SPREADSHEET_ID = "18ci-lXIJAhb-T96DZ1bL5sEKVmishPTBItIMaACBRJw"
+# MAGIC FIX: Streamlit-gsheets needs the FULL URL, not just the ID!
+SPREADSHEET = "https://docs.google.com/spreadsheets/d/18ci-lXIJAhb-T96DZ1bL5sEKVmishPTBItIMaACBRJw/edit?gid=0#gid=0"
 
 try:
     conn = st.connection("gsheets", type=GSheetsConnection)
     
-    # MAGIC FIX: Adding ttl=0 forces Streamlit to ignore its memory and check live!
-    test_data = conn.read(spreadsheet=SPREADSHEET_ID, nrows=5, ttl=0)
+    # Passing the full URL
+    test_data = conn.read(spreadsheet=SPREADSHEET, nrows=5, ttl=0)
     
-    st.success("✅ Connection Successful! The cache is busted and the robot is in.")
+    st.success("✅ Connection Successful! The robot is in.")
     st.dataframe(test_data)
     
 except Exception as e:
