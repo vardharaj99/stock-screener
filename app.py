@@ -56,6 +56,14 @@ try:
                             live_price = float(close_series.iloc[-1]) # Fallback to daily
                     except Exception:
                         live_price = float(close_series.iloc[-1]) # Fallback to daily
+                    
+                    # 5. Day Chg = Based on Live Price
+                    if len(close_series) >= 2:
+                        prev_close = float(close_series.iloc[-2])
+                    else:
+                        prev_close = live_price
+                    
+                    day_chg = ((live_price - prev_close) / prev_close) * 100
                         
                     # 2. Do the Stage Analysis Math
                     weekly_df = close_series.resample('W-FRI').last()
@@ -80,6 +88,7 @@ try:
                     results.append({
                         'Ticker': ticker.replace('.NS', ''), 
                         'Live Price': live_price,
+                        'Day Chg': day_chg,
                         '50W SMA': current_sma,
                         '% Dist from SMA': pct_distance,
                         'Current Stage': stage
@@ -95,11 +104,35 @@ try:
             if 'Ticker' in merged_df.columns: 
                 merged_df = merged_df.drop(columns=['Ticker'])
             merged_df = merged_df.loc[:, ~merged_df.columns.str.contains('^Unnamed')]
+
+            # ==========================================
+            # NEW PORTFOLIO CALCULATIONS
+            # ==========================================
+            
+            # 1. Hide the LTP column as it is static one from the spreadsheet.
+            if 'LTP' in merged_df.columns:
+                merged_df = merged_df.drop(columns=['LTP'])
+                
+            # Safely check if Qty and Invested exist from your CSV before calculating
+            if 'Qty' in merged_df.columns and 'Invested' in merged_df.columns:
+                # 2. Cur. Value = Live Price * Qty
+                merged_df['Cur. Value'] = merged_df['Live Price'] * merged_df['Qty']
+                
+                # 3. P&L = Cur. Value - Invested 
+                merged_df['P&L'] = merged_df['Cur. Value'] - merged_df['Invested']
+                
+                # 4. Net Chg = % Change over my invested amount
+                merged_df['Net Chg'] = ((merged_df['Cur. Value'] - merged_df['Invested']) / merged_df['Invested']) * 100
+
+            # ==========================================
             
             cols = list(merged_df.columns)
             if 'Live Price' in cols and 'Instrument' in cols:
                 cols.insert(cols.index('Instrument') + 1, cols.pop(cols.index('Live Price')))
-                merged_df = merged_df[cols]
+                # Tuck the Day Chg right next to the Live Price for better UI
+                if 'Day Chg' in cols:
+                    cols.insert(cols.index('Live Price') + 1, cols.pop(cols.index('Day Chg')))
+            merged_df = merged_df[cols]
             
             numeric_cols = merged_df.select_dtypes(include=['float64', 'int64']).columns
             merged_df[numeric_cols] = merged_df[numeric_cols].round(2)
