@@ -172,7 +172,7 @@ try:
     conn = st.connection("gsheets", type=GSheetsConnection)
     
     # 1. Access the underlying gspread client to fetch all sheet names
-    doc = conn.client.open_by_url(SPREADSHEET)
+    doc = conn.client._client.open_by_url(SPREADSHEET)
     worksheets = doc.worksheets()
     sheet_names = [ws.title for ws in worksheets]
     
