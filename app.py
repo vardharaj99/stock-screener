@@ -134,6 +134,29 @@ try:
                 # 4. Net Chg = % Change over invested amount
                 merged_df['Net Chg'] = ((merged_df['Cur. Val'] - merged_df['Invested']) / merged_df['Invested']) * 100
 
+                # ==========================================
+                # HEADER PORTFOLIO SUMMARY WIDGETS
+                # ==========================================
+                total_invested = merged_df['Invested'].sum()
+                total_current = merged_df['Cur. Val'].sum()
+                total_pl = total_current - total_invested
+                total_pl_pct = (total_pl / total_invested) * 100 if total_invested > 0 else 0
+                
+                st.success("Live Market Data Pulled Successfully!")
+                st.subheader("Portfolio Summary")
+                
+                # Create 4 columns instead of 3
+                col1, col2, col3, col4 = st.columns(4)
+                
+                col1.metric("Total Invested", f"₹{total_invested:,.2f}")
+                col2.metric("Total Current Value", f"₹{total_current:,.2f}")
+                
+                # Use abs() to keep the main text clean, rely on the delta to color code it green/red
+                col3.metric("Absolute P&L (₹)", f"₹{abs(total_pl):,.2f}", f"₹{total_pl:,.2f}")
+                col4.metric("P&L Percentage (%)", f"{abs(total_pl_pct):.2f}%", f"{total_pl_pct:.2f}%")
+                
+                st.divider()
+
             # ==========================================
             
             # Reorder columns for a cleaner UI view
@@ -147,7 +170,6 @@ try:
             numeric_cols = merged_df.select_dtypes(include=['float64', 'int64']).columns
             merged_df[numeric_cols] = merged_df[numeric_cols].round(2)
             
-            st.success("Live Market Data Pulled Successfully!")
             st.dataframe(merged_df, use_container_width=True, hide_index=True)
         else:
             st.warning("No valid data could be processed. Please check Yahoo Finance connectivity.")
