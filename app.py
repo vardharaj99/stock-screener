@@ -46,18 +46,18 @@ try:
                         continue
                     
                     # ---------------------------------------------------------
-                    # THE FIX: Snipe the 1-minute chart for the true Live Price
+                    # Snipe the 1-minute chart for the true Live Price
                     # ---------------------------------------------------------
                     try:
                         live_data = stock.history(period="1d", interval="1m")
                         if not live_data.empty and 'Close' in live_data.columns:
                             live_price = float(live_data['Close'].dropna().iloc[-1])
                         else:
-                            live_price = float(close_series.iloc[-1]) # Fallback to daily
+                            live_price = float(close_series.iloc[-1]) 
                     except Exception:
-                        live_price = float(close_series.iloc[-1]) # Fallback to daily
+                        live_price = float(close_series.iloc[-1]) 
                     
-                    # 5. Day Chg = Based on Live Price
+                    # Calculate Live Day Change
                     if len(close_series) >= 2:
                         prev_close = float(close_series.iloc[-2])
                     else:
@@ -73,7 +73,7 @@ try:
                     if len(weekly_df) < 50 or pd.isna(weekly_df['50W_SMA'].iloc[-1]): 
                         continue
                         
-                    current_price = live_price # Use our new sniper price for the math too!
+                    current_price = live_price 
                     current_sma = float(weekly_df['50W_SMA'].iloc[-1])
                     sma_4_weeks_ago = float(weekly_df['50W_SMA'].iloc[-5])
                     pct_distance = ((current_price - current_sma) / current_sma) * 100
@@ -106,30 +106,40 @@ try:
             merged_df = merged_df.loc[:, ~merged_df.columns.str.contains('^Unnamed')]
 
             # ==========================================
-            # NEW PORTFOLIO CALCULATIONS
+            # NEW PORTFOLIO CALCULATIONS & CLEANUP
             # ==========================================
             
-            # 1. Hide the LTP column as it is static one from the spreadsheet.
-            if 'LTP' in merged_df.columns:
-                merged_df = merged_df.drop(columns=['LTP'])
-                
-            # Safely check if Qty and Invested exist from your CSV before calculating
+            # 1. Hide the static columns from the spreadsheet (including 'Day Chg.', 'LTP', etc.)
+            static_cols = ['LTP', 'Day chg.', 'Day Chg.', 'Cur. val', 'Cur. Val', 'P&L', 'Net chg.', 'Net Chg.']
+            merged_df = merged_df.drop(columns=[col for col in static_cols if col in merged_df.columns])
+            
+            # Ensure Qty column is uniformly named (handles "Qty." from standard Zerodha CSVs)
+            if 'Qty.' in merged_df.columns and 'Qty' not in merged_df.columns:
+                merged_df = merged_df.rename(columns={'Qty.': 'Qty'})
+
+            # Force columns to numeric to fix math errors (stripping commas if sheets exported them as text)
+            if 'Qty' in merged_df.columns:
+                merged_df['Qty'] = pd.to_numeric(merged_df['Qty'].astype(str).str.replace(',', ''), errors='coerce')
+            if 'Invested' in merged_df.columns:
+                merged_df['Invested'] = pd.to_numeric(merged_df['Invested'].astype(str).str.replace(',', ''), errors='coerce')
+
+            # Perform the new calculations
             if 'Qty' in merged_df.columns and 'Invested' in merged_df.columns:
                 # 2. Cur. Value = Live Price * Qty
-                merged_df['Cur. Value'] = merged_df['Live Price'] * merged_df['Qty']
+                merged_df['Cur. Val'] = merged_df['Live Price'] * merged_df['Qty']
                 
-                # 3. P&L = Cur. Value - Invested 
-                merged_df['P&L'] = merged_df['Cur. Value'] - merged_df['Invested']
+                # 3. P&L = Cur. Val - Invested 
+                merged_df['P&L'] = merged_df['Cur. Val'] - merged_df['Invested']
                 
-                # 4. Net Chg = % Change over my invested amount
-                merged_df['Net Chg'] = ((merged_df['Cur. Value'] - merged_df['Invested']) / merged_df['Invested']) * 100
+                # 4. Net Chg = % Change over invested amount
+                merged_df['Net Chg'] = ((merged_df['Cur. Val'] - merged_df['Invested']) / merged_df['Invested']) * 100
 
             # ==========================================
             
+            # Reorder columns for a cleaner UI view
             cols = list(merged_df.columns)
             if 'Live Price' in cols and 'Instrument' in cols:
                 cols.insert(cols.index('Instrument') + 1, cols.pop(cols.index('Live Price')))
-                # Tuck the Day Chg right next to the Live Price for better UI
                 if 'Day Chg' in cols:
                     cols.insert(cols.index('Live Price') + 1, cols.pop(cols.index('Day Chg')))
             merged_df = merged_df[cols]
