@@ -29,7 +29,6 @@ def analyze_and_render_watchlists(watchlist_df):
         with tab:
             df = watchlist_df[watchlist_df['List Name'] == current_list].copy()
             
-            # PURE PYTHON FIX: Avoid Pandas .str accessor
             raw_tickers = [str(t).strip() for t in df['Instrument'].tolist() if pd.notnull(t)]
             tickers = [t + ".NS" if not t.endswith(".NS") else t for t in raw_tickers]
             
@@ -41,7 +40,6 @@ def analyze_and_render_watchlists(watchlist_df):
                 merged_df = pd.merge(df, analysis_df, left_on='Instrument', right_on='Ticker', how='left')
                 if 'Ticker' in merged_df.columns: merged_df = merged_df.drop(columns=['Ticker'])
                 
-                # PURE PYTHON FIX: Avoid Pandas .str.replace for PyArrow compatibility
                 def clean_price(val):
                     try:
                         return float(str(val).replace(',', '').strip())
@@ -49,7 +47,6 @@ def analyze_and_render_watchlists(watchlist_df):
                         return 0.0
                 
                 merged_df['Price Added'] = merged_df['Price Added'].apply(clean_price)
-                
                 merged_df['Hypo. P&L'] = merged_df['Live Price'] - merged_df['Price Added']
                 merged_df['Hypo. Net Chg (%)'] = (merged_df['Hypo. P&L'] / merged_df['Price Added']) * 100
                 
@@ -63,30 +60,20 @@ def analyze_and_render_watchlists(watchlist_df):
                     return '⚪ Flat'
                 
                 merged_df['Trend'] = merged_df['Hypo. P&L'].apply(get_trend_indicator)
-                
-                # ==========================================
-                # NEW FEATURE: Screener.in Chart Link
-                # ==========================================
                 merged_df['Chart'] = "https://www.screener.in/company/" + merged_df['Instrument'] + "/"
 
-                # Place 'Chart' right after 'Instrument' in the column order
                 cols = ['Instrument', 'Chart', 'List Name', 'Date Added', 'Price Added', 'Live Price', 'Trend', 'Hypo. P&L', 'Hypo. Net Chg (%)', 'Current Stage', 'Day Chg', '50W SMA', '% Dist from SMA']
                 merged_df = merged_df[[c for c in cols if c in merged_df.columns]]
                 
                 numeric_cols = merged_df.select_dtypes(include=['float64', 'int64']).columns
                 merged_df[numeric_cols] = merged_df[numeric_cols].round(2)
                 
-                # Render with the clickable LinkColumn configuration
                 st.dataframe(
                     merged_df, 
                     use_container_width=True, 
                     hide_index=True,
                     column_config={
-                        "Chart": st.column_config.LinkColumn(
-                            "Chart",
-                            help="Click to open Screener.in",
-                            display_text="📈 View"
-                        )
+                        "Chart": st.column_config.LinkColumn("Chart", help="Click to open Screener.in", display_text="📈 View")
                     }
                 )
             else:
@@ -102,40 +89,79 @@ try:
         ws_watchlists = doc.add_worksheet(title="Watchlists", rows="100", cols="20")
         ws_watchlists.append_row(["List Name", "Instrument", "Date Added", "Price Added"])
     
-    # Read raw data
     raw_watchlist_df = conn.read(spreadsheet=SPREADSHEET, worksheet="Watchlists", ttl="5m")
     
-    # THE NUCLEAR FIX: Strip all PyArrow backend types immediately upon download
     if not raw_watchlist_df.empty:
         watchlist_df = pd.DataFrame(raw_watchlist_df.values.tolist(), columns=raw_watchlist_df.columns)
     else:
         watchlist_df = raw_watchlist_df
 
+    # ==========================================
+    # UPGRADED DYNAMIC CONFIGURATOR
+    # ==========================================
     with st.expander("⚙️ Add New Stock to Watchlist", expanded=True):
-        with st.form("add_stock_form", clear_on_submit=True):
-            st.caption("Add stocks here and they will be saved to your Google Sheet automatically.")
-            col1, col2, col3, col4 = st.columns(4)
+        st.caption("Select an existing list or create a new one. The entry price will be fetched automatically based on the date you select.")
+        
+        # Grab existing lists for the Dropdown
+        existing_lists = []
+        if 'List Name' in watchlist_df.columns:
+            existing_lists = [str(name).strip() for name in watchlist_df['List Name'].unique() if pd.notnull(name) and str(name).strip() != '']
+        
+        list_options = ["➕ Create New List..."] + existing_lists
+        
+        col1, col2, col3 = st.columns(3)
+        
+        # 1. Dynamic List Name Logic
+        selected_list = col1.selectbox("Watchlist Category", options=list_options)
+        
+        if selected_list == "➕ Create New List...":
+            final_list_name = col1.text_input("Enter New List Name", placeholder="e.g. Pharma, Defence")
+        else:
+            final_list_name = selected_list
             
-            new_list = col1.text_input("List Name", placeholder="e.g. Pharma, Defence")
-            new_ticker = col2.text_input("Stock Ticker", placeholder="e.g. SUNPHARMA, HAL")
-            new_date = col3.date_input("Date Added")
-            new_price = col4.number_input("Entry Price (₹)", min_value=0.0, format="%.2f")
-            
-            submitted = st.form_submit_button("➕ Save to Watchlist")
-            if submitted:
-                if new_list and new_ticker and new_price > 0:
-                    ws_watchlists.append_row([
-                        new_list.strip(), 
-                        new_ticker.strip().upper(), 
-                        new_date.strftime("%Y-%m-%d"), 
-                        float(new_price)
-                    ])
-                    st.success(f"Successfully added {new_ticker.upper()} to the {new_list} list!")
-                    st.cache_data.clear()
-                    st.rerun()
-                else:
-                    st.error("Please fill out all fields and ensure the price is greater than 0.")
-                    
+        # 2. Ticker & Date
+        new_ticker = col2.text_input("Stock Ticker", placeholder="e.g. SUNPHARMA", help="Type the exact NSE/BSE symbol.")
+        new_date = col3.date_input("Hypothetical Entry Date")
+        
+        # 3. Auto-fetch Price and Save
+        if st.button("➕ Auto-Fetch Price & Save", type="primary"):
+            if final_list_name and new_ticker:
+                ticker_symbol = new_ticker.strip().upper()
+                # Ensure it has the Yahoo Finance suffix for Indian stocks
+                if not ticker_symbol.endswith('.NS') and not ticker_symbol.endswith('.BO'):
+                    ticker_symbol += '.NS' 
+                
+                with st.spinner(f"Fetching historical price for {ticker_symbol} around {new_date}..."):
+                    try:
+                        import yfinance as yf
+                        stock = yf.Ticker(ticker_symbol)
+                        # Fetch a few days ahead in case the selected date was a weekend/market holiday
+                        end_date = new_date + pd.Timedelta(days=7)
+                        hist = stock.history(start=new_date.strftime("%Y-%m-%d"), end=end_date.strftime("%Y-%m-%d"))
+                        
+                        if not hist.empty:
+                            fetched_price = float(hist['Close'].iloc[0])
+                            # Grab the actual trading day the price corresponds to
+                            actual_traded_date = hist.index[0].strftime("%Y-%m-%d")
+                            
+                            ws_watchlists.append_row([
+                                final_list_name.strip(), 
+                                new_ticker.strip().upper(), 
+                                actual_traded_date, 
+                                fetched_price
+                            ])
+                            st.success(f"Successfully added {new_ticker.upper()}! Entry price logged at ₹{fetched_price:.2f} (from {actual_traded_date}).")
+                            st.cache_data.clear()
+                            st.rerun()
+                        else:
+                            st.error(f"Could not find any trading data for {ticker_symbol} near that date. Please check the ticker symbol.")
+                    except Exception as e:
+                        st.error(f"Error fetching price: {e}")
+            else:
+                st.error("Please provide both a List Name and a Stock Ticker.")
+                
+    # ==========================================
+
     if not watchlist_df.empty and len(watchlist_df) > 0:
         analyze_and_render_watchlists(watchlist_df)
     else:
