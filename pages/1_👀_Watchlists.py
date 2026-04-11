@@ -2,6 +2,7 @@ import streamlit as st
 from streamlit_gsheets import GSheetsConnection
 import pandas as pd
 import warnings
+import json  # <-- We need this to nuke the PyArrow backend
 from modules.market_math import fetch_live_data_and_stage
 
 warnings.filterwarnings('ignore')
@@ -48,22 +49,34 @@ def analyze_and_render_watchlists(watchlist_df):
                 numeric_cols = merged_df.select_dtypes(include=['float64', 'int64']).columns
                 merged_df[numeric_cols] = merged_df[numeric_cols].round(2)
                 
-                # THE BULLETPROOF FIX: Rebuild DataFrame explicitly to destroy PyArrow arrays
-                clean_df = pd.DataFrame()
-                for col in merged_df.columns:
-                    if pd.api.types.is_numeric_dtype(merged_df[col]):
-                        clean_df[col] = merged_df[col].astype(float)
-                    else:
-                        clean_df[col] = merged_df[col].astype(object) # Forces standard Python text
+                # ==========================================
+                # THE BULLETPROOF PYARROW FIX
+                # ==========================================
+                # Serialize to JSON and back to completely sever any PyArrow memory links
+                raw_json = merged_df.to_json(orient="records")
+                clean_df = pd.DataFrame(json.loads(raw_json))
                 
-                # Now the Styler will work flawlessly
-                st.dataframe(
-                    clean_df.style.applymap(
-                        lambda x: 'color: green' if x > 0 else ('color: red' if x < 0 else ''), 
-                        subset=['Hypo. P&L', 'Hypo. Net Chg (%)', 'Day Chg']
-                    ), 
-                    use_container_width=True, hide_index=True
-                )
+                # Safe coloring function that won't crash on empty cells
+                def apply_color(x):
+                    try:
+                        val = float(x)
+                        if val > 0: return 'color: green'
+                        elif val < 0: return 'color: red'
+                    except:
+                        pass
+                    return ''
+
+                style_cols = [c for c in ['Hypo. P&L', 'Hypo. Net Chg (%)', 'Day Chg'] if c in clean_df.columns]
+                
+                # Check pandas version and apply the styler securely
+                styler = clean_df.style
+                if hasattr(styler, "map"):
+                    styled_df = styler.map(apply_color, subset=style_cols)
+                else:
+                    styled_df = styler.applymap(apply_color, subset=style_cols)
+                
+                st.dataframe(styled_df, use_container_width=True, hide_index=True)
+                # ==========================================
             else:
                 st.warning("Could not fetch data for this list.")
 
