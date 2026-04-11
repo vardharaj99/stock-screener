@@ -2,6 +2,8 @@ import streamlit as st
 from streamlit_gsheets import GSheetsConnection
 import pandas as pd
 import warnings
+import requests
+from streamlit_searchbox import st_searchbox
 from modules.market_math import fetch_live_data_and_stage
 
 warnings.filterwarnings('ignore')
@@ -12,16 +14,42 @@ st.markdown("Track hypothetical entry points based on Stage Analysis.")
 
 SPREADSHEET = "https://docs.google.com/spreadsheets/d/18ci-lXIJAhb-T96DZ1bL5sEKVmishPTBItIMaACBRJw/edit?gid=0#gid=0"
 
-# A starter list of popular stocks for the type-ahead search. 
-# You can expand this list as much as you want!
-POPULAR_STOCKS = [
-    "RELIANCE.NS", "TCS.NS", "HDFCBANK.NS", "ICICIBANK.NS", "BHARTIARTL.NS", 
-    "SBI.NS", "INFY.NS", "LITC.NS", "HINDUNILVR.NS", "ITC.NS", "LT.NS",
-    "BAJFINANCE.NS", "HCLTECH.NS", "MARUTI.NS", "SUNPHARMA.NS", "TATAMOTORS.NS",
-    "MAHINDRA.NS", "TATASTEEL.NS", "KOTAKBANK.NS", "AXISBANK.NS", "HAL.NS",
-    "NATCOPHARM.NS", "KOPRAN.NS", "SANSERA.NS", "BEL.NS", "ZOMATO.NS"
-]
+# ==========================================
+# LIVE API SEARCH FUNCTION
+# ==========================================
+def search_yahoo_finance(searchterm: str):
+    """Hits Yahoo Finance's live search API as you type."""
+    if not searchterm or len(searchterm) < 2:
+        return []
+    
+    url = f"https://query2.finance.yahoo.com/v1/finance/search?q={searchterm}&quotesCount=10&newsCount=0"
+    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
+    
+    try:
+        response = requests.get(url, headers=headers)
+        data = response.json()
+        quotes = data.get('quotes', [])
+        
+        results = []
+        for q in quotes:
+            symbol = q.get('symbol', '')
+            name = q.get('shortname', symbol)
+            # Filter primarily for Indian stocks on NSE (.NS) and BSE (.BO)
+            if symbol.endswith('.NS') or symbol.endswith('.BO'):
+                # Format: "Reliance Industries (RELIANCE.NS)" -> returns "RELIANCE.NS" to the app
+                results.append((f"{name} ({symbol})", symbol))
+                
+        # If no Indian stocks match, let the user try forcing it
+        if not results:
+            results.append((f"Search globally for: {searchterm.upper()}", searchterm.upper()))
+            
+        return results
+    except Exception:
+        return []
 
+# ==========================================
+# RENDER LOGIC
+# ==========================================
 def analyze_and_render_watchlists(watchlist_df):
     required_cols = ['List Name', 'Instrument', 'Date Added', 'Price Added']
     if not all(col in watchlist_df.columns for col in required_cols):
@@ -105,11 +133,8 @@ try:
     else:
         watchlist_df = raw_watchlist_df
 
-    # ==========================================
-    # UPGRADED DYNAMIC CONFIGURATOR
-    # ==========================================
     with st.expander("⚙️ Add New Stock to Watchlist", expanded=True):
-        st.caption("Select an existing list or create a new one. The entry price will be fetched automatically based on the date you select.")
+        st.caption("Select an existing list or create a new one. Search any NSE/BSE stock dynamically.")
         
         existing_lists = []
         if 'List Name' in watchlist_df.columns:
@@ -119,22 +144,23 @@ try:
         
         col1, col2, col3 = st.columns(3)
         
-        # 1. Dynamic List Name
         selected_list = col1.selectbox("Watchlist Category", options=list_options)
         if selected_list == "➕ Create New List...":
             final_list_name = col1.text_input("Enter New List Name", placeholder="e.g. Pharma, Defence")
         else:
             final_list_name = selected_list
             
-        # 2. Hybrid Ticker Selection (Type-ahead vs Manual)
-        manual_override = col2.toggle("Enter micro-cap manually")
-        
-        if manual_override:
-            new_ticker = col2.text_input("Manual Ticker Entry", placeholder="e.g. NEWIPO.NS")
-        else:
-            new_ticker = col2.selectbox("Search Ticker", options=sorted(POPULAR_STOCKS))
+        # ==========================================
+        # THE NEW API SEARCH BAR
+        # ==========================================
+        with col2:
+            new_ticker = st_searchbox(
+                search_yahoo_finance,
+                key="ticker_search",
+                placeholder="Type to search (e.g. TATA)...",
+                clear_on_submit=False
+            )
             
-        # 3. Date Selection
         new_date = col3.date_input("Hypothetical Entry Date")
         
         if st.button("➕ Auto-Fetch Price & Save", type="primary"):
@@ -154,7 +180,6 @@ try:
                             fetched_price = float(hist['Close'].iloc[0])
                             actual_traded_date = hist.index[0].strftime("%Y-%m-%d")
                             
-                            # Clean the ticker for display (remove .NS if you want, or keep it. We'll strip it for the sheet)
                             display_ticker = new_ticker.replace('.NS', '').replace('.BO', '').upper()
                             
                             ws_watchlists.append_row([
@@ -171,7 +196,7 @@ try:
                     except Exception as e:
                         st.error(f"Error fetching price: {e}")
             else:
-                st.error("Please provide both a List Name and a Stock Ticker.")
+                st.error("Please provide both a List Name and select a Stock Ticker from the dropdown.")
 
     if not watchlist_df.empty and len(watchlist_df) > 0:
         analyze_and_render_watchlists(watchlist_df)
