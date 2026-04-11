@@ -34,12 +34,9 @@ def search_yahoo_finance(searchterm: str):
         for q in quotes:
             symbol = q.get('symbol', '')
             name = q.get('shortname', symbol)
-            # Filter primarily for Indian stocks on NSE (.NS) and BSE (.BO)
             if symbol.endswith('.NS') or symbol.endswith('.BO'):
-                # Format: "Reliance Industries (RELIANCE.NS)" -> returns "RELIANCE.NS" to the app
                 results.append((f"{name} ({symbol})", symbol))
                 
-        # If no Indian stocks match, let the user try forcing it
         if not results:
             results.append((f"Search globally for: {searchterm.upper()}", searchterm.upper()))
             
@@ -99,7 +96,8 @@ def analyze_and_render_watchlists(watchlist_df):
                 merged_df['Trend'] = merged_df['Hypo. P&L'].apply(get_trend_indicator)
                 merged_df['Chart'] = "https://www.screener.in/company/" + merged_df['Instrument'] + "/"
 
-                cols = ['Instrument', 'Chart', 'List Name', 'Date Added', 'Price Added', 'Live Price', 'Trend', 'Hypo. P&L', 'Hypo. Net Chg (%)', 'Current Stage', 'Day Chg', '50W SMA', '% Dist from SMA']
+                # Removed 'List Name' from the display columns!
+                cols = ['Instrument', 'Chart', 'Date Added', 'Price Added', 'Live Price', 'Trend', 'Hypo. P&L', 'Hypo. Net Chg (%)', 'Current Stage', 'Day Chg', '50W SMA', '% Dist from SMA']
                 merged_df = merged_df[[c for c in cols if c in merged_df.columns]]
                 
                 numeric_cols = merged_df.select_dtypes(include=['float64', 'int64']).columns
@@ -150,13 +148,11 @@ try:
         else:
             final_list_name = selected_list
             
-        # ==========================================
-        # THE NEW API SEARCH BAR
-        # ==========================================
         with col2:
             new_ticker = st_searchbox(
                 search_yahoo_finance,
                 key="ticker_search",
+                label="Search Ticker", 
                 placeholder="Type to search (e.g. TATA)...",
                 clear_on_submit=False
             )
