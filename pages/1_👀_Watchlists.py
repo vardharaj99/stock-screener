@@ -12,13 +12,22 @@ st.markdown("Track hypothetical entry points based on Stage Analysis.")
 
 SPREADSHEET = "https://docs.google.com/spreadsheets/d/18ci-lXIJAhb-T96DZ1bL5sEKVmishPTBItIMaACBRJw/edit?gid=0#gid=0"
 
+# A starter list of popular stocks for the type-ahead search. 
+# You can expand this list as much as you want!
+POPULAR_STOCKS = [
+    "RELIANCE.NS", "TCS.NS", "HDFCBANK.NS", "ICICIBANK.NS", "BHARTIARTL.NS", 
+    "SBI.NS", "INFY.NS", "LITC.NS", "HINDUNILVR.NS", "ITC.NS", "LT.NS",
+    "BAJFINANCE.NS", "HCLTECH.NS", "MARUTI.NS", "SUNPHARMA.NS", "TATAMOTORS.NS",
+    "MAHINDRA.NS", "TATASTEEL.NS", "KOTAKBANK.NS", "AXISBANK.NS", "HAL.NS",
+    "NATCOPHARM.NS", "KOPRAN.NS", "SANSERA.NS", "BEL.NS", "ZOMATO.NS"
+]
+
 def analyze_and_render_watchlists(watchlist_df):
     required_cols = ['List Name', 'Instrument', 'Date Added', 'Price Added']
     if not all(col in watchlist_df.columns for col in required_cols):
         st.error(f"Watchlist sheet is missing columns. It must exactly have: {', '.join(required_cols)}")
         return
 
-    # Clean list names safely
     list_names = [name for name in watchlist_df['List Name'].unique() if pd.notnull(name) and str(name).strip() != '']
     
     if len(list_names) == 0:
@@ -102,7 +111,6 @@ try:
     with st.expander("⚙️ Add New Stock to Watchlist", expanded=True):
         st.caption("Select an existing list or create a new one. The entry price will be fetched automatically based on the date you select.")
         
-        # Grab existing lists for the Dropdown
         existing_lists = []
         if 'List Name' in watchlist_df.columns:
             existing_lists = [str(name).strip() for name in watchlist_df['List Name'].unique() if pd.notnull(name) and str(name).strip() != '']
@@ -111,23 +119,27 @@ try:
         
         col1, col2, col3 = st.columns(3)
         
-        # 1. Dynamic List Name Logic
+        # 1. Dynamic List Name
         selected_list = col1.selectbox("Watchlist Category", options=list_options)
-        
         if selected_list == "➕ Create New List...":
             final_list_name = col1.text_input("Enter New List Name", placeholder="e.g. Pharma, Defence")
         else:
             final_list_name = selected_list
             
-        # 2. Ticker & Date
-        new_ticker = col2.text_input("Stock Ticker", placeholder="e.g. SUNPHARMA", help="Type the exact NSE/BSE symbol.")
+        # 2. Hybrid Ticker Selection (Type-ahead vs Manual)
+        manual_override = col2.toggle("Enter micro-cap manually")
+        
+        if manual_override:
+            new_ticker = col2.text_input("Manual Ticker Entry", placeholder="e.g. NEWIPO.NS")
+        else:
+            new_ticker = col2.selectbox("Search Ticker", options=sorted(POPULAR_STOCKS))
+            
+        # 3. Date Selection
         new_date = col3.date_input("Hypothetical Entry Date")
         
-        # 3. Auto-fetch Price and Save
         if st.button("➕ Auto-Fetch Price & Save", type="primary"):
             if final_list_name and new_ticker:
                 ticker_symbol = new_ticker.strip().upper()
-                # Ensure it has the Yahoo Finance suffix for Indian stocks
                 if not ticker_symbol.endswith('.NS') and not ticker_symbol.endswith('.BO'):
                     ticker_symbol += '.NS' 
                 
@@ -135,22 +147,23 @@ try:
                     try:
                         import yfinance as yf
                         stock = yf.Ticker(ticker_symbol)
-                        # Fetch a few days ahead in case the selected date was a weekend/market holiday
                         end_date = new_date + pd.Timedelta(days=7)
                         hist = stock.history(start=new_date.strftime("%Y-%m-%d"), end=end_date.strftime("%Y-%m-%d"))
                         
                         if not hist.empty:
                             fetched_price = float(hist['Close'].iloc[0])
-                            # Grab the actual trading day the price corresponds to
                             actual_traded_date = hist.index[0].strftime("%Y-%m-%d")
+                            
+                            # Clean the ticker for display (remove .NS if you want, or keep it. We'll strip it for the sheet)
+                            display_ticker = new_ticker.replace('.NS', '').replace('.BO', '').upper()
                             
                             ws_watchlists.append_row([
                                 final_list_name.strip(), 
-                                new_ticker.strip().upper(), 
+                                display_ticker, 
                                 actual_traded_date, 
                                 fetched_price
                             ])
-                            st.success(f"Successfully added {new_ticker.upper()}! Entry price logged at ₹{fetched_price:.2f} (from {actual_traded_date}).")
+                            st.success(f"Successfully added {display_ticker}! Entry price logged at ₹{fetched_price:.2f} (from {actual_traded_date}).")
                             st.cache_data.clear()
                             st.rerun()
                         else:
@@ -159,8 +172,6 @@ try:
                         st.error(f"Error fetching price: {e}")
             else:
                 st.error("Please provide both a List Name and a Stock Ticker.")
-                
-    # ==========================================
 
     if not watchlist_df.empty and len(watchlist_df) > 0:
         analyze_and_render_watchlists(watchlist_df)
