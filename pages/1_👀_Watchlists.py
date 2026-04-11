@@ -8,9 +8,8 @@ from modules.market_math import fetch_live_data_and_stage
 
 warnings.filterwarnings('ignore')
 
+# We can keep the page title in the browser tab the same, but we will shrink the on-screen title
 st.set_page_config(page_title="Paper Trading", page_icon="👀", layout="wide")
-st.title("👀 Paper Trading Watchlists")
-st.markdown("Track hypothetical entry points based on Stage Analysis.")
 
 SPREADSHEET = "https://docs.google.com/spreadsheets/d/18ci-lXIJAhb-T96DZ1bL5sEKVmishPTBItIMaACBRJw/edit?gid=0#gid=0"
 
@@ -18,7 +17,6 @@ SPREADSHEET = "https://docs.google.com/spreadsheets/d/18ci-lXIJAhb-T96DZ1bL5sEKV
 # LIVE API SEARCH FUNCTION
 # ==========================================
 def search_yahoo_finance(searchterm: str):
-    """Hits Yahoo Finance's live search API as you type."""
     if not searchterm or len(searchterm) < 2:
         return []
     
@@ -45,6 +43,65 @@ def search_yahoo_finance(searchterm: str):
         return []
 
 # ==========================================
+# POPUP MODAL FOR ADDING STOCKS
+# ==========================================
+@st.dialog("⚙️ Add New Stock to Watchlist")
+def add_stock_modal(existing_lists, ws_watchlists):
+    st.caption("Search any NSE/BSE stock dynamically.")
+    
+    list_options = ["➕ Create New List..."] + existing_lists
+    selected_list = st.selectbox("Watchlist Category", options=list_options)
+    
+    if selected_list == "➕ Create New List...":
+        final_list_name = st.text_input("Enter New List Name", placeholder="e.g. Pharma, Defence")
+    else:
+        final_list_name = selected_list
+        
+    new_ticker = st_searchbox(
+        search_yahoo_finance,
+        key="ticker_search_modal",
+        label="Search Ticker", 
+        placeholder="Type to search (e.g. TATA)...",
+        clear_on_submit=False
+    )
+        
+    new_date = st.date_input("Hypothetical Entry Date")
+    
+    if st.button("➕ Auto-Fetch Price & Save", type="primary", use_container_width=True):
+        if final_list_name and new_ticker:
+            ticker_symbol = new_ticker.strip().upper()
+            if not ticker_symbol.endswith('.NS') and not ticker_symbol.endswith('.BO'):
+                ticker_symbol += '.NS' 
+            
+            with st.spinner(f"Fetching historical price for {ticker_symbol}..."):
+                try:
+                    import yfinance as yf
+                    stock = yf.Ticker(ticker_symbol)
+                    end_date = new_date + pd.Timedelta(days=7)
+                    hist = stock.history(start=new_date.strftime("%Y-%m-%d"), end=end_date.strftime("%Y-%m-%d"))
+                    
+                    if not hist.empty:
+                        fetched_price = float(hist['Close'].iloc[0])
+                        actual_traded_date = hist.index[0].strftime("%Y-%m-%d")
+                        display_ticker = new_ticker.replace('.NS', '').replace('.BO', '').upper()
+                        
+                        ws_watchlists.append_row([
+                            final_list_name.strip(), 
+                            display_ticker, 
+                            actual_traded_date, 
+                            fetched_price
+                        ])
+                        st.success(f"Successfully added {display_ticker}! Entry logged at ₹{fetched_price:.2f}.")
+                        st.cache_data.clear()
+                        st.rerun()
+                    else:
+                        st.error(f"Could not find trading data near that date.")
+                except Exception as e:
+                    st.error(f"Error fetching price: {e}")
+        else:
+            st.error("Please provide both a List Name and select a Stock Ticker.")
+
+# ==========================================
 # RENDER LOGIC
 # ==========================================
 def analyze_and_render_watchlists(watchlist_df):
@@ -54,7 +111,6 @@ def analyze_and_render_watchlists(watchlist_df):
         return
 
     list_names = [name for name in watchlist_df['List Name'].unique() if pd.notnull(name) and str(name).strip() != '']
-    
     if len(list_names) == 0:
         return
 
@@ -81,8 +137,20 @@ def analyze_and_render_watchlists(watchlist_df):
                         return 0.0
                 
                 merged_df['Price Added'] = merged_df['Price Added'].apply(clean_price)
-                merged_df['Hypo. P&L'] = merged_df['Live Price'] - merged_df['Price Added']
-                merged_df['Hypo. Net Chg (%)'] = (merged_df['Hypo. P&L'] / merged_df['Price Added']) * 100
+                
+                # ==========================================
+                # NEW PAPER TRADING MATH LOGIC
+                # ==========================================
+                # Calculate Qty based on ₹1,00,000 / Price Added (rounded to nearest whole number)
+                merged_df['Qty'] = merged_df['Price Added'].apply(lambda x: int(round(100000 / x)) if x > 0 else 0)
+                
+                # Hardcode the invested amount to exactly ₹1,00,000 as requested
+                merged_df['Invested'] = 100000.0
+                
+                # Calculate current value and P&L based on Live Price and Calculated Qty
+                merged_df['Cur. Val'] = merged_df['Live Price'] * merged_df['Qty']
+                merged_df['Hypo. P&L'] = merged_df['Cur. Val'] - merged_df['Invested']
+                merged_df['Hypo. Net Chg (%)'] = (merged_df['Hypo. P&L'] / merged_df['Invested']) * 100
                 
                 def get_trend_indicator(val):
                     try:
@@ -96,8 +164,11 @@ def analyze_and_render_watchlists(watchlist_df):
                 merged_df['Trend'] = merged_df['Hypo. P&L'].apply(get_trend_indicator)
                 merged_df['Chart'] = "https://www.screener.in/company/" + merged_df['Instrument'] + "/"
 
-                # Removed 'List Name' from the display columns!
-                cols = ['Instrument', 'Chart', 'Date Added', 'Price Added', 'Live Price', 'Trend', 'Hypo. P&L', 'Hypo. Net Chg (%)', 'Current Stage', 'Day Chg', '50W SMA', '% Dist from SMA']
+                cols = [
+                    'Instrument', 'Chart', 'Date Added', 'Price Added', 'Qty', 'Invested', 
+                    'Live Price', 'Cur. Val', 'Trend', 'Hypo. P&L', 'Hypo. Net Chg (%)', 
+                    'Current Stage', 'Day Chg', '50W SMA', '% Dist from SMA'
+                ]
                 merged_df = merged_df[[c for c in cols if c in merged_df.columns]]
                 
                 numeric_cols = merged_df.select_dtypes(include=['float64', 'int64']).columns
@@ -131,73 +202,34 @@ try:
     else:
         watchlist_df = raw_watchlist_df
 
-    with st.expander("⚙️ Add New Stock to Watchlist", expanded=True):
-        st.caption("Select an existing list or create a new one. Search any NSE/BSE stock dynamically.")
-        
-        existing_lists = []
-        if 'List Name' in watchlist_df.columns:
-            existing_lists = [str(name).strip() for name in watchlist_df['List Name'].unique() if pd.notnull(name) and str(name).strip() != '']
-        
-        list_options = ["➕ Create New List..."] + existing_lists
-        
-        col1, col2, col3 = st.columns(3)
-        
-        selected_list = col1.selectbox("Watchlist Category", options=list_options)
-        if selected_list == "➕ Create New List...":
-            final_list_name = col1.text_input("Enter New List Name", placeholder="e.g. Pharma, Defence")
-        else:
-            final_list_name = selected_list
-            
-        with col2:
-            new_ticker = st_searchbox(
-                search_yahoo_finance,
-                key="ticker_search",
-                label="Search Ticker", 
-                placeholder="Type to search (e.g. TATA)...",
-                clear_on_submit=False
-            )
-            
-        new_date = col3.date_input("Hypothetical Entry Date")
-        
-        if st.button("➕ Auto-Fetch Price & Save", type="primary"):
-            if final_list_name and new_ticker:
-                ticker_symbol = new_ticker.strip().upper()
-                if not ticker_symbol.endswith('.NS') and not ticker_symbol.endswith('.BO'):
-                    ticker_symbol += '.NS' 
-                
-                with st.spinner(f"Fetching historical price for {ticker_symbol} around {new_date}..."):
-                    try:
-                        import yfinance as yf
-                        stock = yf.Ticker(ticker_symbol)
-                        end_date = new_date + pd.Timedelta(days=7)
-                        hist = stock.history(start=new_date.strftime("%Y-%m-%d"), end=end_date.strftime("%Y-%m-%d"))
-                        
-                        if not hist.empty:
-                            fetched_price = float(hist['Close'].iloc[0])
-                            actual_traded_date = hist.index[0].strftime("%Y-%m-%d")
-                            
-                            display_ticker = new_ticker.replace('.NS', '').replace('.BO', '').upper()
-                            
-                            ws_watchlists.append_row([
-                                final_list_name.strip(), 
-                                display_ticker, 
-                                actual_traded_date, 
-                                fetched_price
-                            ])
-                            st.success(f"Successfully added {display_ticker}! Entry price logged at ₹{fetched_price:.2f} (from {actual_traded_date}).")
-                            st.cache_data.clear()
-                            st.rerun()
-                        else:
-                            st.error(f"Could not find any trading data for {ticker_symbol} near that date. Please check the ticker symbol.")
-                    except Exception as e:
-                        st.error(f"Error fetching price: {e}")
-            else:
-                st.error("Please provide both a List Name and select a Stock Ticker from the dropdown.")
+    existing_lists = []
+    if 'List Name' in watchlist_df.columns:
+        existing_lists = [str(name).strip() for name in watchlist_df['List Name'].unique() if pd.notnull(name) and str(name).strip() != '']
 
+    # ==========================================
+    # NEW COMPACT HEADER & POPUP BUTTON
+    # ==========================================
+    col_hdr, col_btn = st.columns([0.85, 0.15], vertical_alignment="bottom")
+    
+    with col_hdr:
+        # Replaced the massive st.title with a sleek subheader for more screen real estate
+        st.markdown("### 👀 Watchlists")
+        st.caption("Track hypothetical entry points. Invested amount is standardized at ₹1,00,000 per stock.")
+        
+    with col_btn:
+        # This button triggers the popup modal defined at the top of the file
+        if st.button("➕ Add Stocks", type="primary", use_container_width=True):
+            add_stock_modal(existing_lists, ws_watchlists)
+            
+    st.divider()
+
+    # ==========================================
+    # RENDER THE MAIN DASHBOARD
+    # ==========================================
     if not watchlist_df.empty and len(watchlist_df) > 0:
         analyze_and_render_watchlists(watchlist_df)
     else:
-        st.info("Your watchlist is empty. Use the form above to add your first stock!")
+        st.info("Your watchlist is empty. Click 'Add Stocks' to begin!")
         
 except Exception as e:
     st.error(f"A critical error occurred while connecting to Google Sheets: {e}")
