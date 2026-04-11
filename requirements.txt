@@ -2,7 +2,6 @@ streamlit
 pandas
 yfinance
 requests
+requests-oauthlib
 streamlit-searchbox
 google-api-python-client
-google-auth-oauthlib
-google-auth-httplib2
