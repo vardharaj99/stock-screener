@@ -48,8 +48,12 @@ def analyze_and_render_watchlists(watchlist_df):
                 numeric_cols = merged_df.select_dtypes(include=['float64', 'int64']).columns
                 merged_df[numeric_cols] = merged_df[numeric_cols].round(2)
                 
+                # THE FIX: Convert to native Python dictionary to strip PyArrow arrays safely, then back to DataFrame
+                clean_df = pd.DataFrame(merged_df.to_dict("list"))
+                
+                # Now it is safe to apply the color formatting!
                 st.dataframe(
-                    merged_df.style.applymap(
+                    clean_df.style.applymap(
                         lambda x: 'color: green' if x > 0 else ('color: red' if x < 0 else ''), 
                         subset=['Hypo. P&L', 'Hypo. Net Chg (%)', 'Day Chg']
                     ), 
