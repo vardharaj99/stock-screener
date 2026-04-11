@@ -18,7 +18,9 @@ def analyze_and_render_watchlists(watchlist_df):
         st.error(f"Watchlist sheet is missing columns. It must exactly have: {', '.join(required_cols)}")
         return
 
-    list_names = watchlist_df['List Name'].dropna().unique()
+    # Clean list names safely
+    list_names = [name for name in watchlist_df['List Name'].unique() if pd.notnull(name) and str(name).strip() != '']
+    
     if len(list_names) == 0:
         return
 
@@ -26,7 +28,9 @@ def analyze_and_render_watchlists(watchlist_df):
     for tab, current_list in zip(tabs, list_names):
         with tab:
             df = watchlist_df[watchlist_df['List Name'] == current_list].copy()
-            raw_tickers = df['Instrument'].astype(str).str.strip().tolist()
+            
+            # PURE PYTHON FIX: Avoid Pandas .str accessor
+            raw_tickers = [str(t).strip() for t in df['Instrument'].tolist() if pd.notnull(t)]
             tickers = [t + ".NS" if not t.endswith(".NS") else t for t in raw_tickers]
             
             with st.spinner(f"Fetching live data for {current_list} watchlist..."):
@@ -37,14 +41,18 @@ def analyze_and_render_watchlists(watchlist_df):
                 merged_df = pd.merge(df, analysis_df, left_on='Instrument', right_on='Ticker', how='left')
                 if 'Ticker' in merged_df.columns: merged_df = merged_df.drop(columns=['Ticker'])
                 
-                merged_df['Price Added'] = pd.to_numeric(merged_df['Price Added'].astype(str).str.replace(',', ''), errors='coerce')
+                # PURE PYTHON FIX: Avoid Pandas .str.replace for PyArrow compatibility
+                def clean_price(val):
+                    try:
+                        return float(str(val).replace(',', '').strip())
+                    except:
+                        return 0.0
+                
+                merged_df['Price Added'] = merged_df['Price Added'].apply(clean_price)
                 
                 merged_df['Hypo. P&L'] = merged_df['Live Price'] - merged_df['Price Added']
                 merged_df['Hypo. Net Chg (%)'] = (merged_df['Hypo. P&L'] / merged_df['Price Added']) * 100
                 
-                # ==========================================
-                # THE BULLETPROOF FIX: Use a Visual Trend Column instead of Pandas Styler
-                # ==========================================
                 def get_trend_indicator(val):
                     try:
                         v = float(val)
@@ -56,16 +64,13 @@ def analyze_and_render_watchlists(watchlist_df):
                 
                 merged_df['Trend'] = merged_df['Hypo. P&L'].apply(get_trend_indicator)
                 
-                # Reorder the columns to show the Trend right next to the P&L
                 cols = ['Instrument', 'List Name', 'Date Added', 'Price Added', 'Live Price', 'Trend', 'Hypo. P&L', 'Hypo. Net Chg (%)', 'Current Stage', 'Day Chg', '50W SMA', '% Dist from SMA']
                 merged_df = merged_df[[c for c in cols if c in merged_df.columns]]
                 
                 numeric_cols = merged_df.select_dtypes(include=['float64', 'int64']).columns
                 merged_df[numeric_cols] = merged_df[numeric_cols].round(2)
                 
-                # Render the raw dataframe directly (Zero risk of PyArrow style crashes!)
                 st.dataframe(merged_df, use_container_width=True, hide_index=True)
-                # ==========================================
             else:
                 st.warning("Could not fetch data for this list.")
 
@@ -79,7 +84,14 @@ try:
         ws_watchlists = doc.add_worksheet(title="Watchlists", rows="100", cols="20")
         ws_watchlists.append_row(["List Name", "Instrument", "Date Added", "Price Added"])
     
-    watchlist_df = conn.read(spreadsheet=SPREADSHEET, worksheet="Watchlists", ttl="5m")
+    # Read raw data
+    raw_watchlist_df = conn.read(spreadsheet=SPREADSHEET, worksheet="Watchlists", ttl="5m")
+    
+    # THE NUCLEAR FIX: Strip all PyArrow backend types immediately upon download
+    if not raw_watchlist_df.empty:
+        watchlist_df = pd.DataFrame(raw_watchlist_df.values.tolist(), columns=raw_watchlist_df.columns)
+    else:
+        watchlist_df = raw_watchlist_df
 
     with st.expander("⚙️ Add New Stock to Watchlist", expanded=True):
         with st.form("add_stock_form", clear_on_submit=True):
