@@ -48,10 +48,15 @@ def analyze_and_render_watchlists(watchlist_df):
                 numeric_cols = merged_df.select_dtypes(include=['float64', 'int64']).columns
                 merged_df[numeric_cols] = merged_df[numeric_cols].round(2)
                 
-                # THE FIX: Convert to native Python dictionary to strip PyArrow arrays safely, then back to DataFrame
-                clean_df = pd.DataFrame(merged_df.to_dict("list"))
+                # THE BULLETPROOF FIX: Rebuild DataFrame explicitly to destroy PyArrow arrays
+                clean_df = pd.DataFrame()
+                for col in merged_df.columns:
+                    if pd.api.types.is_numeric_dtype(merged_df[col]):
+                        clean_df[col] = merged_df[col].astype(float)
+                    else:
+                        clean_df[col] = merged_df[col].astype(object) # Forces standard Python text
                 
-                # Now it is safe to apply the color formatting!
+                # Now the Styler will work flawlessly
                 st.dataframe(
                     clean_df.style.applymap(
                         lambda x: 'color: green' if x > 0 else ('color: red' if x < 0 else ''), 
