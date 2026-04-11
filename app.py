@@ -46,7 +46,7 @@ with col1:
         st.subheader("👀 Watchlists")
         st.write("Track hypothetical entries and monitor stage analysis for NSE/BSE stocks.")
         if st.button("Open Watchlists", type="primary", use_container_width=True):
-            st.switch_page("pages/1_#L01f440_Watchlists.py")
+            st.switch_page("pages/1_Watchlists.py")
 
 with col2:
     with st.container(border=True):
