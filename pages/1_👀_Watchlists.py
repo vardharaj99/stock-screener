@@ -12,7 +12,6 @@ st.set_page_config(page_title="Paper Trading", page_icon="👀", layout="wide")
 
 SPREADSHEET = "https://docs.google.com/spreadsheets/d/18ci-lXIJAhb-T96DZ1bL5sEKVmishPTBItIMaACBRJw/edit?gid=0#gid=0"
 
-# Initialize state for the slide-down panel
 if "show_add_panel" not in st.session_state:
     st.session_state.show_add_panel = False
 
@@ -46,9 +45,9 @@ def search_yahoo_finance(searchterm: str):
         return []
 
 # ==========================================
-# RENDER LOGIC
+# RENDER LOGIC WITH DELETE CAPABILITY
 # ==========================================
-def analyze_and_render_watchlists(watchlist_df):
+def analyze_and_render_watchlists(watchlist_df, conn):
     required_cols = ['List Name', 'Instrument', 'Date Added', 'Price Added']
     if not all(col in watchlist_df.columns for col in required_cols):
         st.error(f"Watchlist sheet is missing columns. It must exactly have: {', '.join(required_cols)}")
@@ -99,25 +98,53 @@ def analyze_and_render_watchlists(watchlist_df):
                 
                 merged_df['Trend'] = merged_df['Hypo. P&L'].apply(get_trend_indicator)
                 merged_df['Chart'] = "https://www.screener.in/company/" + merged_df['Instrument'] + "/"
+                
+                # Create the Delete Checkbox Column
+                merged_df['🗑️ Delete'] = False
 
                 cols = [
                     'Instrument', 'Chart', 'Date Added', 'Price Added', 'Qty', 'Invested', 
                     'Live Price', 'Cur. Val', 'Trend', 'Hypo. P&L', 'Hypo. Net Chg (%)', 
-                    'Current Stage', 'Day Chg', '50W SMA', '% Dist from SMA'
+                    'Current Stage', 'Day Chg', '50W SMA', '% Dist from SMA', '🗑️ Delete'
                 ]
                 merged_df = merged_df[[c for c in cols if c in merged_df.columns]]
                 
                 numeric_cols = merged_df.select_dtypes(include=['float64', 'int64']).columns
                 merged_df[numeric_cols] = merged_df[numeric_cols].round(2)
                 
-                st.dataframe(
+                # Lock all columns EXCEPT the Delete column so users don't accidentally edit prices
+                disabled_cols = [c for c in cols if c != '🗑️ Delete']
+
+                # Use data_editor to allow checkbox interactions
+                edited_df = st.data_editor(
                     merged_df, 
+                    key=f"editor_{current_list}",
                     use_container_width=True, 
                     hide_index=True,
+                    disabled=disabled_cols,
                     column_config={
-                        "Chart": st.column_config.LinkColumn("Chart", help="Click to open Screener.in", display_text="📈 View")
+                        "Chart": st.column_config.LinkColumn("Chart", help="Click to open Screener.in", display_text="📈 View"),
+                        "🗑️ Delete": st.column_config.CheckboxColumn("🗑️ Delete", help="Tick to delete this stock", default=False)
                     }
                 )
+                
+                # Handle Deletions if any checkboxes are ticked
+                tickers_to_delete = edited_df[edited_df['🗑️ Delete'] == True]['Instrument'].tolist()
+                
+                if tickers_to_delete:
+                    st.warning(f"⚠️ You have selected {len(tickers_to_delete)} stock(s) for deletion.")
+                    if st.button("🗑️ Confirm Deletion", key=f"del_btn_{current_list}", type="primary"):
+                        with st.spinner("Deleting from Google Sheets..."):
+                            # Filter the master dataframe to remove the selected stocks from the current list
+                            mask = ~((watchlist_df['List Name'] == current_list) & (watchlist_df['Instrument'].isin(tickers_to_delete)))
+                            new_watchlist_df = watchlist_df[mask]
+                            
+                            # Overwrite the Google Sheet with the newly filtered data
+                            conn.update(worksheet="Watchlists", data=new_watchlist_df)
+                            
+                            st.success("Successfully deleted!")
+                            st.cache_data.clear()
+                            st.rerun()
             else:
                 st.warning("Could not fetch data for this list.")
 
@@ -152,13 +179,12 @@ try:
         st.caption("Track hypothetical entry points. Invested amount is standardized at ₹1,00,000 per stock.")
         
     with col_btn:
-        # Toggles the state securely so it survives page re-runs
         if st.button("➕ Add Stocks", type="primary", use_container_width=True):
             st.session_state.show_add_panel = not st.session_state.show_add_panel
             st.rerun()
             
     # ==========================================
-    # INLINE CONTROL PANEL (Immune to Searchbox Crashes!)
+    # INLINE CONTROL PANEL
     # ==========================================
     if st.session_state.show_add_panel:
         with st.container(border=True):
@@ -171,74 +197,3 @@ try:
             selected_list = col1.selectbox("Watchlist Category", options=list_options)
             if selected_list == "➕ Create New List...":
                 final_list_name = col1.text_input("Enter New List Name", placeholder="e.g. Pharma, Defence")
-            else:
-                final_list_name = selected_list
-                
-            with col2:
-                new_ticker = st_searchbox(
-                    search_yahoo_finance,
-                    key="ticker_search_panel",
-                    label="Search Ticker", 
-                    placeholder="Type to search (e.g. TATA)...",
-                    clear_on_submit=False
-                )
-                    
-            new_date = col3.date_input("Hypothetical Entry Date")
-            
-            # Action Buttons Layout
-            action_col1, action_col2 = st.columns([0.8, 0.2])
-            
-            with action_col1:
-                if st.button("➕ Auto-Fetch Price & Save", type="primary"):
-                    if final_list_name and new_ticker:
-                        ticker_symbol = new_ticker.strip().upper()
-                        if not ticker_symbol.endswith('.NS') and not ticker_symbol.endswith('.BO'):
-                            ticker_symbol += '.NS' 
-                        
-                        with st.spinner(f"Fetching historical price for {ticker_symbol}..."):
-                            try:
-                                import yfinance as yf
-                                stock = yf.Ticker(ticker_symbol)
-                                end_date = new_date + pd.Timedelta(days=7)
-                                hist = stock.history(start=new_date.strftime("%Y-%m-%d"), end=end_date.strftime("%Y-%m-%d"))
-                                
-                                if not hist.empty:
-                                    fetched_price = float(hist['Close'].iloc[0])
-                                    actual_traded_date = hist.index[0].strftime("%Y-%m-%d")
-                                    display_ticker = new_ticker.replace('.NS', '').replace('.BO', '').upper()
-                                    
-                                    ws_watchlists.append_row([
-                                        final_list_name.strip(), 
-                                        display_ticker, 
-                                        actual_traded_date, 
-                                        fetched_price
-                                    ])
-                                    st.success(f"Successfully added {display_ticker}! Entry logged at ₹{fetched_price:.2f}.")
-                                    # Auto-close the panel on success
-                                    st.session_state.show_add_panel = False 
-                                    st.cache_data.clear()
-                                    st.rerun()
-                                else:
-                                    st.error("Could not find trading data near that date.")
-                            except Exception as e:
-                                st.error(f"Error fetching price: {e}")
-                    else:
-                        st.error("Please provide both a List Name and select a Stock Ticker.")
-                        
-            with action_col2:
-                if st.button("Cancel", use_container_width=True):
-                    st.session_state.show_add_panel = False
-                    st.rerun()
-
-    st.divider()
-
-    # ==========================================
-    # RENDER THE MAIN DASHBOARD
-    # ==========================================
-    if not watchlist_df.empty and len(watchlist_df) > 0:
-        analyze_and_render_watchlists(watchlist_df)
-    else:
-        st.info("Your watchlist is empty. Click 'Add Stocks' to begin!")
-        
-except Exception as e:
-    st.error(f"A critical error occurred while connecting to Google Sheets: {e}")
