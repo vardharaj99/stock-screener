@@ -234,4 +234,30 @@ try:
                                         fetched_price
                                     ])
                                     st.success(f"Successfully added {display_ticker}! Entry logged at ₹{fetched_price:.2f}.")
-                                    st.session_state.show_add_panel = False
+                                    st.session_state.show_add_panel = False 
+                                    st.cache_data.clear()
+                                    st.rerun()
+                                else:
+                                    st.error("Could not find trading data near that date.")
+                            except Exception as e:
+                                st.error(f"Error fetching price: {e}")
+                    else:
+                        st.error("Please provide both a List Name and select a Stock Ticker.")
+                        
+            with action_col2:
+                if st.button("Cancel", use_container_width=True):
+                    st.session_state.show_add_panel = False
+                    st.rerun()
+
+    st.divider()
+
+    # ==========================================
+    # RENDER THE MAIN DASHBOARD
+    # ==========================================
+    if not watchlist_df.empty and len(watchlist_df) > 0:
+        analyze_and_render_watchlists(watchlist_df, conn)
+    else:
+        st.info("Your watchlist is empty. Click 'Add Stocks' to begin!")
+        
+except Exception as e:
+    st.error(f"A critical error occurred while connecting to Google Sheets: {e}")
