@@ -52,15 +52,38 @@ def analyze_and_render_profile(holdings_df, profile_name):
             col4.metric("P&L Percentage (%)", f"{abs(total_pl_pct):.2f}%", f"{total_pl_pct:.2f}%")
             st.divider()
 
+        # ==========================================
+        # NEW FEATURE: Screener.in Chart Link
+        # ==========================================
+        # Generate the specific Screener.in URL for each stock
+        merged_df['Chart'] = "https://www.screener.in/company/" + merged_df['Instrument'] + "/"
+
+        # Formatting columns
         cols = list(merged_df.columns)
-        if 'Live Price' in cols and 'Instrument' in cols:
-            cols.insert(cols.index('Instrument') + 1, cols.pop(cols.index('Live Price')))
+        # Move Chart next to the Instrument name for easy clicking
+        if 'Chart' in cols and 'Instrument' in cols:
+            cols.insert(cols.index('Instrument') + 1, cols.pop(cols.index('Chart')))
+        if 'Live Price' in cols and 'Chart' in cols:
+            cols.insert(cols.index('Chart') + 1, cols.pop(cols.index('Live Price')))
             if 'Day Chg' in cols: cols.insert(cols.index('Live Price') + 1, cols.pop(cols.index('Day Chg')))
+            
         merged_df = merged_df[cols]
         numeric_cols = merged_df.select_dtypes(include=['float64', 'int64']).columns
         merged_df[numeric_cols] = merged_df[numeric_cols].round(2)
         
-        st.dataframe(merged_df, use_container_width=True, hide_index=True)
+        # Render with the special clickable LinkColumn configuration
+        st.dataframe(
+            merged_df, 
+            use_container_width=True, 
+            hide_index=True,
+            column_config={
+                "Chart": st.column_config.LinkColumn(
+                    "Chart",
+                    help="Click to open Screener.in",
+                    display_text="📈 View"
+                )
+            }
+        )
 
 try:
     conn = st.connection("gsheets", type=GSheetsConnection)
