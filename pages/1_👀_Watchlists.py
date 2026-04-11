@@ -2,7 +2,6 @@ import streamlit as st
 from streamlit_gsheets import GSheetsConnection
 import pandas as pd
 import warnings
-import json  # <-- We need this to nuke the PyArrow backend
 from modules.market_math import fetch_live_data_and_stage
 
 warnings.filterwarnings('ignore')
@@ -43,39 +42,29 @@ def analyze_and_render_watchlists(watchlist_df):
                 merged_df['Hypo. P&L'] = merged_df['Live Price'] - merged_df['Price Added']
                 merged_df['Hypo. Net Chg (%)'] = (merged_df['Hypo. P&L'] / merged_df['Price Added']) * 100
                 
-                cols = ['Instrument', 'List Name', 'Date Added', 'Price Added', 'Live Price', 'Day Chg', 'Hypo. P&L', 'Hypo. Net Chg (%)', 'Current Stage', '50W SMA', '% Dist from SMA']
+                # ==========================================
+                # THE BULLETPROOF FIX: Use a Visual Trend Column instead of Pandas Styler
+                # ==========================================
+                def get_trend_indicator(val):
+                    try:
+                        v = float(val)
+                        if v > 0: return '🟢 Profit'
+                        elif v < 0: return '🔴 Loss'
+                    except:
+                        pass
+                    return '⚪ Flat'
+                
+                merged_df['Trend'] = merged_df['Hypo. P&L'].apply(get_trend_indicator)
+                
+                # Reorder the columns to show the Trend right next to the P&L
+                cols = ['Instrument', 'List Name', 'Date Added', 'Price Added', 'Live Price', 'Trend', 'Hypo. P&L', 'Hypo. Net Chg (%)', 'Current Stage', 'Day Chg', '50W SMA', '% Dist from SMA']
                 merged_df = merged_df[[c for c in cols if c in merged_df.columns]]
                 
                 numeric_cols = merged_df.select_dtypes(include=['float64', 'int64']).columns
                 merged_df[numeric_cols] = merged_df[numeric_cols].round(2)
                 
-                # ==========================================
-                # THE BULLETPROOF PYARROW FIX
-                # ==========================================
-                # Serialize to JSON and back to completely sever any PyArrow memory links
-                raw_json = merged_df.to_json(orient="records")
-                clean_df = pd.DataFrame(json.loads(raw_json))
-                
-                # Safe coloring function that won't crash on empty cells
-                def apply_color(x):
-                    try:
-                        val = float(x)
-                        if val > 0: return 'color: green'
-                        elif val < 0: return 'color: red'
-                    except:
-                        pass
-                    return ''
-
-                style_cols = [c for c in ['Hypo. P&L', 'Hypo. Net Chg (%)', 'Day Chg'] if c in clean_df.columns]
-                
-                # Check pandas version and apply the styler securely
-                styler = clean_df.style
-                if hasattr(styler, "map"):
-                    styled_df = styler.map(apply_color, subset=style_cols)
-                else:
-                    styled_df = styler.applymap(apply_color, subset=style_cols)
-                
-                st.dataframe(styled_df, use_container_width=True, hide_index=True)
+                # Render the raw dataframe directly (Zero risk of PyArrow style crashes!)
+                st.dataframe(merged_df, use_container_width=True, hide_index=True)
                 # ==========================================
             else:
                 st.warning("Could not fetch data for this list.")
