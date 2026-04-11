@@ -1,8 +1,5 @@
 streamlit
-yfinance
-pandas
 st-gsheets-connection
-streamlit-gsheets
 yfinance
 pandas
 streamlit-searchbox
