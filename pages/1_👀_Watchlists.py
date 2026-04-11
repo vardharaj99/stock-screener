@@ -64,13 +64,31 @@ def analyze_and_render_watchlists(watchlist_df):
                 
                 merged_df['Trend'] = merged_df['Hypo. P&L'].apply(get_trend_indicator)
                 
-                cols = ['Instrument', 'List Name', 'Date Added', 'Price Added', 'Live Price', 'Trend', 'Hypo. P&L', 'Hypo. Net Chg (%)', 'Current Stage', 'Day Chg', '50W SMA', '% Dist from SMA']
+                # ==========================================
+                # NEW FEATURE: Screener.in Chart Link
+                # ==========================================
+                merged_df['Chart'] = "https://www.screener.in/company/" + merged_df['Instrument'] + "/"
+
+                # Place 'Chart' right after 'Instrument' in the column order
+                cols = ['Instrument', 'Chart', 'List Name', 'Date Added', 'Price Added', 'Live Price', 'Trend', 'Hypo. P&L', 'Hypo. Net Chg (%)', 'Current Stage', 'Day Chg', '50W SMA', '% Dist from SMA']
                 merged_df = merged_df[[c for c in cols if c in merged_df.columns]]
                 
                 numeric_cols = merged_df.select_dtypes(include=['float64', 'int64']).columns
                 merged_df[numeric_cols] = merged_df[numeric_cols].round(2)
                 
-                st.dataframe(merged_df, use_container_width=True, hide_index=True)
+                # Render with the clickable LinkColumn configuration
+                st.dataframe(
+                    merged_df, 
+                    use_container_width=True, 
+                    hide_index=True,
+                    column_config={
+                        "Chart": st.column_config.LinkColumn(
+                            "Chart",
+                            help="Click to open Screener.in",
+                            display_text="📈 View"
+                        )
+                    }
+                )
             else:
                 st.warning("Could not fetch data for this list.")
 
