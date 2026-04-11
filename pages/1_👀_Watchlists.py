@@ -134,7 +134,7 @@ def analyze_and_render_watchlists(watchlist_df, conn):
                             mask = ~((watchlist_df['List Name'] == current_list) & (watchlist_df['Instrument'].isin(tickers_to_delete)))
                             new_watchlist_df = watchlist_df[mask]
                             
-                            # THE FIX: We added spreadsheet=SPREADSHEET right here!
+                            # Update sheet securely
                             conn.update(spreadsheet=SPREADSHEET, worksheet="Watchlists", data=new_watchlist_df)
                             
                             st.success("Successfully deleted!")
@@ -145,20 +145,17 @@ def analyze_and_render_watchlists(watchlist_df, conn):
 
 try:
     conn = st.connection("gsheets", type=GSheetsConnection)
-    doc = conn.client._client.open_by_url(SPREADSHEET)
     
+    # OPTIMIZATION: We ONLY read from cache during normal page loads. No hard pings to Google!
     try:
-        ws_watchlists = doc.worksheet("Watchlists")
+        raw_watchlist_df = conn.read(spreadsheet=SPREADSHEET, worksheet="Watchlists", ttl="5m")
+        if not raw_watchlist_df.empty:
+            watchlist_df = pd.DataFrame(raw_watchlist_df.values.tolist(), columns=raw_watchlist_df.columns)
+        else:
+            watchlist_df = raw_watchlist_df
     except Exception:
-        ws_watchlists = doc.add_worksheet(title="Watchlists", rows="100", cols="20")
-        ws_watchlists.append_row(["List Name", "Instrument", "Date Added", "Price Added"])
-    
-    raw_watchlist_df = conn.read(spreadsheet=SPREADSHEET, worksheet="Watchlists", ttl="5m")
-    
-    if not raw_watchlist_df.empty:
-        watchlist_df = pd.DataFrame(raw_watchlist_df.values.tolist(), columns=raw_watchlist_df.columns)
-    else:
-        watchlist_df = raw_watchlist_df
+        # If the sheet doesn't exist yet, we create an empty dataframe safely
+        watchlist_df = pd.DataFrame(columns=['List Name', 'Instrument', 'Date Added', 'Price Added'])
 
     existing_lists = []
     if 'List Name' in watchlist_df.columns:
@@ -227,12 +224,21 @@ try:
                                     actual_traded_date = hist.index[0].strftime("%Y-%m-%d")
                                     display_ticker = new_ticker.replace('.NS', '').replace('.BO', '').upper()
                                     
+                                    # OPTIMIZATION: We ONLY connect to the raw Google document when actually saving!
+                                    doc = conn.client._client.open_by_url(SPREADSHEET)
+                                    try:
+                                        ws_watchlists = doc.worksheet("Watchlists")
+                                    except Exception:
+                                        ws_watchlists = doc.add_worksheet(title="Watchlists", rows="100", cols="20")
+                                        ws_watchlists.append_row(["List Name", "Instrument", "Date Added", "Price Added"])
+                                    
                                     ws_watchlists.append_row([
                                         final_list_name.strip(), 
                                         display_ticker, 
                                         actual_traded_date, 
                                         fetched_price
                                     ])
+                                    
                                     st.success(f"Successfully added {display_ticker}! Entry logged at ₹{fetched_price:.2f}.")
                                     st.session_state.show_add_panel = False 
                                     st.cache_data.clear()
