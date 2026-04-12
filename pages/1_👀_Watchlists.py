@@ -6,6 +6,7 @@ import requests
 from streamlit_searchbox import st_searchbox
 from modules.market_math import fetch_live_data_and_stage
 import datetime
+import yfinance as yf
 
 warnings.filterwarnings('ignore')
 
@@ -36,7 +37,7 @@ def analyze_and_render_watchlists(watchlist_df, conn):
     raw_tickers = [str(t).strip() for t in watchlist_df['Instrument'].tolist() if pd.notnull(t)]
     tickers = [t + ".NS" if not ('.NS' in t or '.BO' in t) else t for t in raw_tickers]
     
-    with st.spinner("Updating prices..."):
+    with st.spinner("Updating prices and fixing missing data..."):
         results, _ = fetch_live_data_and_stage(tickers)
     
     if not results:
@@ -46,19 +47,42 @@ def analyze_and_render_watchlists(watchlist_df, conn):
     live_df = pd.DataFrame(results)
     
     def to_f(v):
-        try: return float(str(v).replace(',', '').strip())
+        try:
+            if pd.isna(v) or str(v).strip() == "": return 0.0
+            return float(str(v).replace(',', '').strip())
         except: return 0.0
 
     master_df = pd.merge(watchlist_df, live_df, left_on='Instrument', right_on='Ticker', how='left')
     master_df['Price Added'] = master_df['Price Added'].apply(to_f)
+
+    # --- VERSATILITY LOGIC: FIX MISSING PRICES ---
+    if (master_df['Price Added'] == 0).any():
+        for idx, row in master_df[master_df['Price Added'] == 0].iterrows():
+            try:
+                t_sym = row['Instrument']
+                if not ('.NS' in t_sym or '.BO' in t_sym): t_sym += '.NS'
+                
+                # 1. Try historical fetch if date exists
+                if pd.notnull(row['Date Added']) and str(row['Date Added']).strip() != "":
+                    d_obj = pd.to_datetime(row['Date Added'])
+                    h_data = yf.Ticker(t_sym).history(start=d_obj, end=d_obj + datetime.timedelta(days=7))
+                    if not h_data.empty:
+                        master_df.at[idx, 'Price Added'] = h_data['Close'].iloc[0]
+                        continue
+                
+                # 2. Fallback to Live Price
+                master_df.at[idx, 'Price Added'] = row['Live Price']
+            except:
+                pass
+
+    # Calculations
     master_df['Qty'] = master_df['Price Added'].apply(lambda x: int(round(100000 / x)) if x > 0 else 0)
     master_df['Invested'] = master_df['Qty'] * master_df['Price Added']
     master_df['Cur. Val'] = master_df['Live Price'] * master_df['Qty']
     master_df['P&L'] = master_df['Cur. Val'] - master_df['Invested']
 
     # --- GLOBAL AGGREGATES ---
-    t_inv = master_df['Invested'].sum()
-    t_val = master_df['Cur. Val'].sum()
+    t_inv, t_val = master_df['Invested'].sum(), master_df['Cur. Val'].sum()
     t_pnl = t_val - t_inv
     t_pct = (t_pnl / t_inv * 100) if t_inv > 0 else 0
 
@@ -73,11 +97,8 @@ def analyze_and_render_watchlists(watchlist_df, conn):
     for tab, current_list in zip(tabs, list_names):
         with tab:
             df = master_df[master_df['List Name'] == current_list].copy()
-            
-            # --- TAB AGGREGATES ---
             l_inv, l_val = df['Invested'].sum(), df['Cur. Val'].sum()
-            l_pnl = l_val - l_inv
-            l_pct = (l_pnl / l_inv * 100) if l_inv > 0 else 0
+            l_pnl, l_pct = (l_val - l_inv), ((l_val - l_inv) / l_inv * 100 if l_inv > 0 else 0)
             
             c1, c2, c3 = st.columns(3)
             c1.caption(f"Invested: ₹{l_inv:,.0f}")
@@ -131,7 +152,6 @@ try:
             
             if st.button("➕ Save", type="primary"):
                 if fl and nt:
-                    import yfinance as yf
                     ts = nt.upper() if ('.NS' in nt.upper() or '.BO' in nt.upper()) else nt.upper() + '.NS'
                     h = yf.Ticker(ts).history(start=nd, end=nd + datetime.timedelta(days=7))
                     if not h.empty:
