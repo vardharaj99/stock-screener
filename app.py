@@ -1,106 +1,123 @@
 import streamlit as st
-from streamlit_gsheets import GSheetsConnection
+import yfinance as yf
 import pandas as pd
+from datetime import datetime, timedelta
 import warnings
-from modules.market_math import fetch_live_data_and_stage
 
 warnings.filterwarnings('ignore')
 
-st.set_page_config(page_title="My Portfolios", page_icon="💼", layout="wide")
-st.title("💼 Stage Analysis Portfolios")
-st.markdown("Fetching securely authenticated portfolio data and **live market prices**...")
+# Set up the web page title and layout
+st.set_page_config(page_title="V3 Portfolio Screener", layout="wide")
+st.title("📈 V3: TheWrap TA & Vibe Tracker")
+st.markdown("Upload your Zerodha holdings to analyze with the **10% Death Cross Rule** and **EMA Convergence** logic.")
 
-SPREADSHEET = "https://docs.google.com/spreadsheets/d/18ci-lXIJAhb-T96DZ1bL5sEKVmishPTBItIMaACBRJw/edit?gid=0#gid=0"
-
-def analyze_and_render_profile(holdings_df, profile_name):
-    if 'Instrument' not in holdings_df.columns:
-        st.info(f"Sheet '{profile_name}' is empty or missing the 'Instrument' column.")
-        return
-
-    raw_tickers = holdings_df['Instrument'].dropna().astype(str).str.strip().tolist()
-    tickers = [t + ".NS" if not t.endswith(".NS") else t for t in raw_tickers]
-    
-    with st.spinner(f"Analyzing {len(tickers)} stocks for {profile_name}..."):
-        results, errors = fetch_live_data_and_stage(tickers)
-
-    if results:
-        analysis_df = pd.DataFrame(results)
-        merged_df = pd.merge(holdings_df, analysis_df, left_on='Instrument', right_on='Ticker', how='left')
+def get_v3_signals(ticker_symbol):
+    try:
+        # Fetch 2 years of data for EMA stability and historical cross detection
+        end_date = datetime.today()
+        start_date = end_date - timedelta(days=730)
+        df = yf.download(ticker_symbol, start=start_date, end=end_date, progress=False)
         
-        if 'Ticker' in merged_df.columns: merged_df = merged_df.drop(columns=['Ticker'])
-        static_cols = ['LTP', 'Day chg.', 'Day Chg.', 'Cur. val', 'Cur. Val', 'P&L', 'Net chg.', 'Net Chg.']
-        merged_df = merged_df.drop(columns=[col for col in static_cols if col in merged_df.columns])
+        if df.empty or len(df) < 100:
+            return None
+
+        # Resample to Weekly (Friday)
+        w = df['Close'].resample('W-FRI').last().to_frame()
         
-        if 'Qty.' in merged_df.columns and 'Qty' not in merged_df.columns: merged_df = merged_df.rename(columns={'Qty.': 'Qty'})
-        if 'Qty' in merged_df.columns: merged_df['Qty'] = pd.to_numeric(merged_df['Qty'].astype(str).str.replace(',', ''), errors='coerce')
-        if 'Invested' in merged_df.columns: merged_df['Invested'] = pd.to_numeric(merged_df['Invested'].astype(str).str.replace(',', ''), errors='coerce')
-
-        if 'Qty' in merged_df.columns and 'Invested' in merged_df.columns:
-            merged_df['Cur. Val'] = merged_df['Live Price'] * merged_df['Qty']
-            merged_df['P&L'] = merged_df['Cur. Val'] - merged_df['Invested']
-            merged_df['Net Chg'] = ((merged_df['Cur. Val'] - merged_df['Invested']) / merged_df['Invested']) * 100
-
-            total_invested = merged_df['Invested'].sum()
-            total_current = merged_df['Cur. Val'].sum()
-            total_pl = total_current - total_invested
-            total_pl_pct = (total_pl / total_invested) * 100 if total_invested > 0 else 0
+        # Calculate EMA stack (10W, 20W, 40W)
+        w['10W_EMA'] = w['Close'].ewm(span=10, adjust=False).mean()
+        w['20W_EMA'] = w['Close'].ewm(span=20, adjust=False).mean()
+        w['40W_EMA'] = w['Close'].ewm(span=40, adjust=False).mean()
+        
+        curr = w.iloc[-1]
+        prev = w.iloc[-2]
+        price = float(curr['Close'])
+        
+        # 1. Death Cross Logic (10W < 40W) + 10% Drawdown Rule
+        if curr['10W_EMA'] < curr['40W_EMA']:
+            # Scan back to find the first week the current Death Cross started
+            cross_mask = w['10W_EMA'] < w['40W_EMA']
+            # Find the start of the continuous cross sequence
+            dc_start_date = w[cross_mask].index[-1]
+            dc_price = float(w.loc[dc_start_date, 'Close'])
+            drawdown = ((price - dc_price) / dc_price) * 100
             
-            col1, col2, col3, col4 = st.columns(4)
-            col1.metric("Total Invested", f"₹{total_invested:,.2f}")
-            col2.metric("Total Current Value", f"₹{total_current:,.2f}")
-            col3.metric("Absolute P&L (₹)", f"₹{abs(total_pl):,.2f}", f"₹{total_pl:,.2f}")
-            col4.metric("P&L Percentage (%)", f"{abs(total_pl_pct):.2f}%", f"{total_pl_pct:.2f}%")
-            st.divider()
+            if drawdown <= -10:
+                return "Sell", f"🔴 Exit: {abs(drawdown):.1f}% drop since Death Cross (Anchor: ₹{dc_price:.2f})"
+            return "Hold", f"🟠 Caution: Death Cross active. Drawdown ({abs(drawdown):.1f}%) is within 10% buffer."
 
-        # ==========================================
-        # NEW FEATURE: Screener.in Chart Link
-        # ==========================================
-        # Generate the specific Screener.in URL for each stock
-        merged_df['Chart'] = "https://www.screener.in/company/" + merged_df['Instrument'] + "/"
-
-        # Formatting columns
-        cols = list(merged_df.columns)
-        # Move Chart next to the Instrument name for easy clicking
-        if 'Chart' in cols and 'Instrument' in cols:
-            cols.insert(cols.index('Instrument') + 1, cols.pop(cols.index('Chart')))
-        if 'Live Price' in cols and 'Chart' in cols:
-            cols.insert(cols.index('Chart') + 1, cols.pop(cols.index('Live Price')))
-            if 'Day Chg' in cols: cols.insert(cols.index('Live Price') + 1, cols.pop(cols.index('Day Chg')))
-            
-        merged_df = merged_df[cols]
-        numeric_cols = merged_df.select_dtypes(include=['float64', 'int64']).columns
-        merged_df[numeric_cols] = merged_df[numeric_cols].round(2)
+        # 2. Flowchart Convergence & Resistance Logic
+        spread_curr = abs(curr['10W_EMA'] - curr['40W_EMA'])
+        spread_prev = abs(prev['10W_EMA'] - prev['40W_EMA'])
+        is_converging = spread_curr < spread_prev
         
-        # Render with the special clickable LinkColumn configuration
-        st.dataframe(
-            merged_df, 
-            use_container_width=True, 
-            hide_index=True,
-            column_config={
-                "Chart": st.column_config.LinkColumn(
-                    "Chart",
-                    help="Click to open Screener.in",
-                    display_text="📈 View"
-                )
-            }
-        )
+        if is_converging:
+            if price < curr['40W_EMA']:
+                return "Sell", "🔴 Exit: Price broke support (40W EMA) during convergence."
+            if price > curr['10W_EMA'] and price > prev['Close']:
+                return "Buy", "🟢 Bullish: Breakout seen during EMA convergence."
+            return "Wait", "🟡 Watch: EMAs converging; awaiting clear breakout."
 
-try:
-    conn = st.connection("gsheets", type=GSheetsConnection)
-    doc = conn.client._client.open_by_url(SPREADSHEET)
-    worksheets = doc.worksheets()
-    sheet_names = [ws.title for ws in worksheets]
-    
-    portfolio_sheets = [name for name in sheet_names if name.lower() != 'watchlists']
-    
-    if portfolio_sheets:
-        tabs = st.tabs(portfolio_sheets)
-        for tab, sheet_name in zip(tabs, portfolio_sheets):
-            with tab:
-                holdings_df = conn.read(spreadsheet=SPREADSHEET, worksheet=sheet_name, ttl="5m")
-                analyze_and_render_profile(holdings_df, sheet_name)
-    else:
-        st.warning("No portfolio sheets found. Create a sheet with your holdings.")
-                
-except Exception as e:
-    st.error(f"A critical error occurred while connecting to Google Sheets: {e}")
+        # 3. Standard Trend Following
+        if price < curr['40W_EMA']:
+            return "Sell", "🔴 Exit: Price broke below the 40W EMA (Long-term trend)."
+        if price < curr['20W_EMA']:
+            return "Hold", "🟡 Caution: 20W EMA broken. Monitoring 40W support."
+        if price < curr['10W_EMA']:
+            return "Hold", "🟡 Momentum Fading: 10W EMA broken. Watch 20W."
+            
+        return "Buy", "🟢 Strong Uptrend: Price maintaining above 10W/20W/40W EMAs."
+        
+    except Exception:
+        return None
+
+# --- UI Logic ---
+uploaded_file = st.file_uploader("Upload Zerodha Holdings (CSV)", type="csv")
+
+if uploaded_file is not None:
+    try:
+        holdings_df = pd.read_csv(uploaded_file)
+        if 'Instrument' not in holdings_df.columns:
+            st.error("Format Error: 'Instrument' column not found.")
+        else:
+            raw_tickers = holdings_df['Instrument'].dropna().unique()
+            tickers = [t + ".NS" if not t.endswith(".NS") else t for t in raw_tickers]
+            
+            analysis_results = {}
+            with st.spinner(f"Analyzing {len(tickers)} symbols..."):
+                for t in tickers:
+                    signal = get_v3_signals(t)
+                    if signal:
+                        analysis_results[t.replace('.NS', '')] = signal
+
+            # Map results back to the original holdings dataframe
+            holdings_df['Action'] = holdings_df['Instrument'].map(lambda x: analysis_results.get(x, (None, None))[0])
+            holdings_df['Rationale'] = holdings_df['Instrument'].map(lambda x: analysis_results.get(x, (None, None))[1])
+
+            # Drop any rows where we couldn't get technical data
+            display_df = holdings_df.dropna(subset=['Action'])
+
+            # Define color coding for the Action column
+            def color_picker(val):
+                if val == 'Buy': return 'background-color: #29b09d; color: white'
+                if val == 'Sell': return 'background-color: #ff4b4b; color: white'
+                return 'background-color: #ffbd45; color: black' # Hold/Wait
+
+            st.success("V3 Analysis Complete!")
+            
+            # Interactive Dataframe with Tooltips
+            st.dataframe(
+                display_df.style.applymap(color_picker, subset=['Action']),
+                column_config={
+                    "Rationale": st.column_config.TextColumn(
+                        "Rationale ℹ️", 
+                        help="Technical justification based on TheWrap TA Rules and Death Cross drawdown."
+                    ),
+                    "Action": st.column_config.TextColumn("Action", width="small")
+                },
+                use_container_width=True,
+                hide_index=True
+            )
+            
+    except Exception as e:
+        st.error(f"Execution Error: {e}")
