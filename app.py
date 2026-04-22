@@ -55,35 +55,75 @@ def analyze_and_render_profile(holdings_df, profile_name):
         # ==========================================
         # NEW FEATURE: Screener.in Chart Link
         # ==========================================
-        # Generate the specific Screener.in URL for each stock
         merged_df['Chart'] = "https://www.screener.in/company/" + merged_df['Instrument'] + "/"
 
         # Formatting columns
         cols = list(merged_df.columns)
-        # Move Chart next to the Instrument name for easy clicking
         if 'Chart' in cols and 'Instrument' in cols:
             cols.insert(cols.index('Instrument') + 1, cols.pop(cols.index('Chart')))
         if 'Live Price' in cols and 'Chart' in cols:
             cols.insert(cols.index('Chart') + 1, cols.pop(cols.index('Live Price')))
             if 'Day Chg' in cols: cols.insert(cols.index('Live Price') + 1, cols.pop(cols.index('Day Chg')))
-            
+
+        # Move Action column to end (before Rationale which we hide in table)
+        for col in ['Action', 'Rationale']:
+            if col in cols:
+                cols.append(cols.pop(cols.index(col)))
+
         merged_df = merged_df[cols]
         numeric_cols = merged_df.select_dtypes(include=['float64', 'int64']).columns
         merged_df[numeric_cols] = merged_df[numeric_cols].round(2)
-        
-        # Render with the special clickable LinkColumn configuration
+
+        # ==========================================
+        # ACTION COLUMN: color-coded badges + popup
+        # ==========================================
+        ACTION_COLORS = {'Buy': '#1a7a1a', 'Sell': '#b30000', 'Hold': '#7a6a00'}
+        ACTION_BG     = {'Buy': '#d4edda',  'Sell': '#f8d7da',  'Hold': '#fff3cd'}
+
+        # Render table (hide Rationale column — accessed via popup)
+        display_cols = [c for c in merged_df.columns if c != 'Rationale']
+        display_df   = merged_df[display_cols].copy()
+
+        # Map Action to emoji labels for the dataframe
+        def _action_label(a):
+            return {'Buy': '🟢 Buy', 'Sell': '🔴 Sell', 'Hold': '🟡 Hold'}.get(a, a)
+        if 'Action' in display_df.columns:
+            display_df['Action'] = display_df['Action'].apply(_action_label)
+
         st.dataframe(
-            merged_df, 
-            use_container_width=True, 
+            display_df,
+            use_container_width=True,
             hide_index=True,
             column_config={
                 "Chart": st.column_config.LinkColumn(
                     "Chart",
                     help="Click to open Screener.in",
                     display_text="📈 View"
+                ),
+                "Action": st.column_config.TextColumn(
+                    "Action",
+                    help="Buy / Sell / Hold signal per TheWrap TA Rules. Click the ℹ️ buttons below for rationale."
                 )
             }
         )
+
+        # Rationale popups — one expander row per stock
+        if 'Action' in merged_df.columns and 'Rationale' in merged_df.columns:
+            st.markdown("#### 📋 Action Rationale")
+            for _, row in merged_df.iterrows():
+                action   = str(row.get('Action', 'Hold'))
+                rat      = str(row.get('Rationale', 'No rationale available.'))
+                instr    = str(row.get('Instrument', ''))
+                color    = ACTION_COLORS.get(action, '#333')
+                bg       = ACTION_BG.get(action, '#f9f9f9')
+                label    = _action_label(action)
+                with st.expander(f"{instr}  —  {label}"):
+                    st.markdown(
+                        f"<div style='background:{bg};border-left:5px solid {color};"
+                        f"padding:12px 16px;border-radius:6px;color:#111;font-size:0.95rem;'>"
+                        f"{rat}</div>",
+                        unsafe_allow_html=True
+                    )
 
 try:
     conn = st.connection("gsheets", type=GSheetsConnection)
