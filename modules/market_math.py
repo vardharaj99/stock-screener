@@ -9,11 +9,7 @@ def _compute_ema(series, span):
 def _compute_action_and_rationale(weekly_close, live_price):
     """
     Implements TheWrap TA Rules Flowchart unified with EMA metrics.
-    
-    Logic:
-    1. All trend detection uses 10W, 20W, and 40W EMA.
-    2. 'Exit' nodes in the flowchart only trigger a 'Sell' if the 
-       live price is >= 10% below the 40W EMA.
+    Threshold: 5% drawdown below the 40W EMA for 'Exit' nodes.
     """
     wc = weekly_close.dropna()
     if len(wc) < 50:
@@ -32,26 +28,27 @@ def _compute_action_and_rationale(weekly_close, live_price):
     drawdown_from_40w = ((live_price - e40) / e40) * 100
 
     def _evaluate_exit_node(condition_name):
-        """Surgically applies the 10% drawdown rule to flowchart Exit nodes."""
-        if drawdown_from_40w <= -10:
+        """Surgically applies the 5% drawdown rule to flowchart Exit nodes."""
+        # Check if price is 5% or more below the 40W EMA
+        if drawdown_from_40w <= -5:
             rationale = (
                 f"🔴 SELL: {condition_name} met. Price is {abs(drawdown_from_40w):.1f}% "
-                f"below the 40W EMA (₹{e40:.2f}), breaching your 10% sustain threshold."
+                f"below the 40W EMA (₹{e40:.2f}), breaching your 5% sustain threshold."
             )
             return "Sell", rationale
         else:
             rationale = (
                 f"🟡 WATCH: {condition_name} met, but price is only {abs(drawdown_from_40w):.1f}% "
-                f"below 40W EMA. Holding until 10% drawdown threshold is reached."
+                f"below 40W EMA. Holding until 5% drawdown threshold is reached."
             )
             return "Hold", rationale
 
-    # EMA Convergence: Gap between 10W and 20W EMA is shrinking
+    # EMA Convergence logic
     gap_now = abs(e10 - e20)
     gap_prev = abs(ema10.iloc[-2] - ema20.iloc[-2])
     emas_converging = gap_now < gap_prev
 
-    # Support / Resistance based on recent 20-week swing
+    # Support / Resistance
     recent = wc.iloc[-20:]
     support = float(recent.min())
     resistance = float(recent.max())
@@ -89,23 +86,20 @@ def fetch_live_data_and_stage(tickers):
 
             close_series = df['Close'].dropna()
             
-            # Fetch most recent price
             try:
                 live_data = stock.history(period="1d", interval="1m")
                 live_price = float(live_data['Close'].iloc[-1]) if not live_data.empty else float(close_series.iloc[-1])
             except:
                 live_price = float(close_series.iloc[-1])
 
-            # Weekly Resampling for EMA Stack
             weekly_df = close_series.resample('W-FRI').last().to_frame(name='Close')
             weekly_df['40W_EMA'] = _compute_ema(weekly_df['Close'], 40)
 
             if len(weekly_df) < 40:
                 continue
 
-            # Unified Stage Analysis (Based on 40W EMA)
             curr_ema40 = float(weekly_df['40W_EMA'].iloc[-1])
-            prev_ema40 = float(weekly_df['40W_EMA'].iloc[-5]) # 4 weeks ago
+            prev_ema40 = float(weekly_df['40W_EMA'].iloc[-5])
             pct_dist_ema = ((live_price - curr_ema40) / curr_ema40) * 100
 
             if live_price > curr_ema40 and curr_ema40 > prev_ema40:
@@ -115,7 +109,6 @@ def fetch_live_data_and_stage(tickers):
             else:
                 stage = '⚪ Neutral'
 
-            # Action & Rationale
             action, rationale = _compute_action_and_rationale(weekly_df['Close'], live_price)
 
             results.append({
